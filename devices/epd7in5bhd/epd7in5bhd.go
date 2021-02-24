@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"io"
+	"log"
 	"time"
 
 	"periph.io/x/periph/conn"
@@ -75,7 +75,7 @@ var DefaultPins = Pins{
 }
 
 // DefaultSleep is the default time to wait for a screen refresh. The official documented refresh time is 22 seconds.
-var DefaultWait = 27 * time.Second
+var DefaultWait = 25 * time.Second
 
 // New creates a Display configured for use.
 //
@@ -126,7 +126,8 @@ func New(p Pins) (*Display, error) {
 	if err != nil {
 		return nil, fmt.Errorf("spireg.Open(%q) = _, %w", "", err)
 	}
-	c, err := port.Connect(5*physic.MegaHertz, spi.Mode0, 8)
+	// 20Mhz is the max for write operations. 2.5Mhz is the max for read operations.
+	c, err := port.Connect(20*physic.MegaHertz, spi.Mode0, 8)
 	if err != nil {
 		connerr := fmt.Errorf("port.Connect(%v, %v, %v) = %w", 5*physic.MegaHertz, spi.Mode0, 8, err)
 		if err := port.Close(); err != nil {
@@ -160,18 +161,25 @@ func (d *Display) sendCommand(cmd byte, data ...byte) {
 	d.cs.Out(gpio.Low)
 	d.c.Tx([]byte{cmd}, nil)
 	d.cs.Out(gpio.High)
-	if len(data) != 0 {
-		for _, b := range data {
-			d.sendData(b)
-		}
-	}
+	d.sendData(data...)
 }
 
-func (d *Display) sendData(data byte) {
-	d.cs.Out(gpio.Low)
-	d.dc.Out(gpio.High)
-	d.c.Tx([]byte{data}, nil)
-	d.cs.Out(gpio.High)
+func (d *Display) sendData(data ...byte) {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("sendData: %s", time.Since(start).String())
+	}(now)
+	batch := 2048
+	for i := 0; i < len(data); i += batch {
+		j := i + batch
+		if j > len(data) {
+			j = len(data)
+		}
+		d.cs.Out(gpio.Low)
+		d.dc.Out(gpio.High)
+		d.c.Tx(data[i:j], nil)
+		d.cs.Out(gpio.High)
+	}
 }
 
 func (d *Display) waitUntilIdle() {
@@ -185,8 +193,8 @@ func (d *Display) turnOnDisplay() {
 	// Load LUT from MCU(0x32)
 	d.sendCommand(displayUpdateControl2, 0xC7)
 	d.sendCommand(masterActivation)
-	time.Sleep(200 * time.Millisecond) //!!!The delay here is necessary, 200uS at least!!!
-	d.waitUntilIdle()                  //waiting for the electronic paper IC to release the idle signal
+	time.Sleep(2 * time.Millisecond) //!!!The delay here is necessary, 200uS at least!!!
+	d.waitUntilIdle()                //waiting for the electronic paper IC to release the idle signal
 }
 
 // Init initializes the display config. It should be used if the device is asleep and needs reinitialization.
@@ -233,16 +241,7 @@ func (d *Display) Clear() {
 	d.Render(nil, nil)
 }
 
-// FullBuffer returns a buffer of BufSize populated with repeated val.
-func FullBuffer(val byte) []byte {
-	b := make([]byte, BufSize, BufSize)
-	for i := range b {
-		b[i] = val
-	}
-	return b
-}
-
-// Display updates the screen from the provided io.ByteReaders..
+// Render updates the screen from the provided io.ByteReaders.
 //
 // The epd7in5bhd does not support partial refreshes. If the provided buffer is
 // smaller than the image, then the rest will be filled with white.
@@ -253,33 +252,25 @@ func FullBuffer(val byte) []byte {
 // 0b1 is a red pixel, and 0b0 is a not-red pixel (no change will occur).
 //
 // Black will always be drawn on the screen before red.
-func (d *Display) Render(blackImg, redImg io.ByteReader) {
-	if blackImg == nil {
-		blackImg = bytes.NewReader([]byte{})
-	}
-	if redImg == nil {
-		redImg = bytes.NewReader([]byte{})
-	}
+func (d *Display) Render(blackImg, redImg []byte) {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("Render: %s", time.Since(start).String())
+	}(now)
 	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
 
 	d.sendCommand(writeRAMBW)
-	for i := 0; i < BufSize; i++ {
-		b, err := blackImg.ReadByte()
-		if err != nil {
-			// io.ByteReader never returns a valid byte on any error, including io.EOF.
-			b = 0xFF
-		}
-		d.sendData(b)
+	d.sendData(blackImg...)
+	if n := BufSize - len(blackImg); n > 0 {
+		// 1 is white, 0 is black.
+		d.sendData(bytes.Repeat([]byte{0xFF}, n)...)
 	}
 
 	d.sendCommand(writeRAMRed)
-	for i := 0; i < BufSize; i++ {
-		b, err := redImg.ReadByte()
-		if err != nil {
-			// io.ByteReader never returns a valid byte on any error, including io.EOF.
-			b = 0xFF
-		}
-		d.sendData(^b)
+	d.sendData(redImg...)
+	if n := BufSize - len(redImg); n > 0 {
+		// 0 is white or black, 1 is red.
+		d.sendData(bytes.Repeat([]byte{0x00}, n)...)
 	}
 	d.turnOnDisplay()
 }
@@ -291,20 +282,102 @@ func (d *Display) Sleep() {
 	d.sendCommand(deepSleepMode, 0x01) //deep sleep
 }
 
-// Convert converts the input image into a byte buffer suitable for Display.Render.
-func Convert(img image.Image) []byte {
+//// Convert converts the input image into a byte buffer suitable for Display.Render.
+//func Convert(img image.Image) []byte {
+//	return convert(img, false)
+//}
+//
+func convert(img image.Image, invert bool) []byte {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("Convert: %s", time.Since(start).String())
+	}(now)
 	buffer := make([]byte, BufSize, BufSize)
+	p := color.Palette([]color.Color{color.Black, color.White})
 	for j := 0; j < DisplayHeight; j++ {
 		for i := 0; i < DisplayWidth; i++ {
-			pixel := 1
+			c := 1
 			if i < img.Bounds().Dx() && j < img.Bounds().Dy() {
-				pixel = color.Palette([]color.Color{color.Black, color.White}).Index(img.At(i, j))
+				c = p.Index(img.At(i, j))
 			}
-			if pixel == 1 {
-				buffer[(i/8)+(j*DisplayWidthBytes)] |= 0x80 >> (uint32(i) % 8)
+			px := (i / 8) + (j * DisplayWidthBytes)
+			bit := byte(0x80 >> (uint32(i) % 8))
+			if c == 0 {
+				if invert {
+					buffer[px] |= bit
+				} else {
+					buffer[px] &= ^bit
+				}
+			} else {
+				if invert {
+					buffer[px] &= ^bit
+				} else {
+					buffer[px] |= bit
+				}
 			}
 		}
 	}
 
 	return buffer
+}
+
+// RenderPaletted renders an image in 3 colors (black, white and red/yellow).
+//
+// If img is a *image.Paletted with exactly 3 colors, each color will be assigned to its
+// nearest by euclidean distance. Otherwise, colors will be assigned by a per-pixel calculation.
+func (d *Display) RenderPaletted(img image.Image) {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("RenderPaletted: %s", time.Since(start).String())
+	}(now)
+	white, red, black := color.White, color.RGBA{255, 0, 0, 255}, color.Black
+	colors := []color.Color{white, red, black}
+	p := color.Palette(colors)
+	// Handle images with exactly 3 colors specially, as we can map
+	// colors directly to display colors.
+	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
+		p = color.Palette{}
+		ip := make(color.Palette, len(pi.Palette))
+		copy(ip, pi.Palette)
+		// Iterate over colors, removing as we go to avoid duplicates.
+		// We don't want both faint red and white to be white.
+		for _, c := range colors {
+			ci := ip.Index(c)
+			p = append(p, ip[ci])
+			ip = append(ip[:ci], ip[ci+1:]...)
+		}
+	}
+	bImg := make([]byte, BufSize, BufSize)
+	rImg := make([]byte, BufSize, BufSize)
+	for j := 0; j < DisplayHeight; j++ {
+		for i := 0; i < DisplayWidth; i++ {
+			c := color.Color(color.White)
+			if i < img.Bounds().Dx() && j < img.Bounds().Dy() {
+				c = colors[p.Index(img.At(i, j))]
+			}
+			px := (i / 8) + (j * DisplayWidthBytes)
+			bit := byte(0x80 >> (uint32(i) % 8))
+			switch c {
+			case red:
+				bImg[px] |= bit
+				rImg[px] |= bit
+			case black:
+				bImg[px] &= ^bit
+				rImg[px] &= ^bit
+			case white:
+				bImg[px] |= bit
+				rImg[px] &= ^bit
+			}
+		}
+	}
+	d.Render(bImg, rImg)
+}
+
+// RenderImages renders a black image and a red/yellow image on the display.
+func (d *Display) RenderImages(black, redyellow image.Image) {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("RenderImages: %s", time.Since(start).String())
+	}(now)
+	d.Render(convert(black, false), convert(redyellow, true))
 }

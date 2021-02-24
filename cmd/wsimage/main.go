@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"image"
 	"image/color"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
+	"github.com/makeworld-the-better-one/dither"
 	"github.com/toothrot/gowaveshare/devices/epd7in5bhd"
 	"github.com/toothrot/gowaveshare/static"
 )
@@ -45,11 +45,42 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	comb, err := staticImage("images/7in5B_HD.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+	cimg, err := staticImage("images/cardinal.png")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Println("Displaying image")
-	d.Render(bytes.NewReader(epd7in5bhd.Convert(bimg)), bytes.NewReader(epd7in5bhd.Convert(rimg)))
+	d.RenderImages(bimg, rimg)
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
+
+	log.Println("Displaying image")
+	d.RenderPaletted(comb)
+	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
+	time.Sleep(epd7in5bhd.DefaultWait)
+
+	log.Println("Displaying image")
+	d.RenderPaletted(imaging.Fill(cimg, epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, imaging.Center, imaging.Lanczos))
+	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
+	time.Sleep(epd7in5bhd.DefaultWait)
+
+	log.Println("Displaying image")
+	colors := []color.Color{color.White, color.RGBA{255, 0, 0, 255}, color.Black}
+	dith := dither.NewDitherer(colors)
+	dith.Matrix = dither.FloydSteinberg
+	dith.Serpentine = true
+	if tmp := dith.DitherPaletted(cimg); tmp != nil {
+		cimg = tmp
+	}
+	d.RenderPaletted(cimg)
+	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
+	time.Sleep(epd7in5bhd.DefaultWait)
+
 	log.Println("Powering off")
 	d.Sleep()
 }

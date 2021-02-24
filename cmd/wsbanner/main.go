@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"image/color"
 	"log"
@@ -46,15 +45,14 @@ func main() {
 
 	ctx.SetFontFace(fontFace())
 	ctx.SetRGB(0, 0, 0)
+	if *red {
+		ctx.SetRGB(255, 0, 0)
+	}
 	ctx.DrawStringWrapped(*text, epd7in5bhd.DisplayWidth/2, epd7in5bhd.DisplayHeight/2, 0.5, 0.5, epd7in5bhd.DisplayWidth-80, 1.0, gg.AlignCenter)
 	rot := imaging.Rotate(ctx.Image(), *rotate, color.White)
 	fit := imaging.Fit(rot, epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, imaging.Lanczos)
 	final := imaging.PasteCenter(imaging.New(epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, color.White), fit)
-	if *red {
-		d.Render(nil, bytes.NewReader(epd7in5bhd.Convert(final)))
-	} else {
-		d.Render(bytes.NewReader(epd7in5bhd.Convert(final)), nil)
-	}
+	d.RenderPaletted(final)
 	time.Sleep(epd7in5bhd.DefaultWait)
 }
 
@@ -73,5 +71,3 @@ func fontFace() font.Face {
 	}
 	return ff
 }
-
-
