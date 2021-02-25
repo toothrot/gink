@@ -69,15 +69,21 @@ func main() {
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
-	log.Println("Displaying image")
+	log.Println("Displaying red-as-red image")
 	colors := []color.Color{color.White, color.RGBA{255, 0, 0, 255}, color.Black}
 	dith := dither.NewDitherer(colors)
 	dith.Matrix = dither.FloydSteinberg
 	dith.Serpentine = true
-	if tmp := dith.DitherPaletted(cimg); tmp != nil {
-		cimg = tmp
-	}
-	d.RenderPaletted(cimg)
+	d.RenderPaletted(dith.DitherPaletted(cimg))
+	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
+	time.Sleep(epd7in5bhd.DefaultWait)
+
+	log.Println("Displaying not-red-as-red image")
+	colors = []color.Color{color.White, color.RGBA{0, 255, 255, 255}, color.Black}
+	dith = dither.NewDitherer(colors)
+	dith.Matrix = dither.FloydSteinberg
+	dith.Serpentine = true
+	d.RenderPaletted(dith.DitherPaletted(cimg))
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 

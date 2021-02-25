@@ -167,7 +167,10 @@ func (d *Display) sendCommand(cmd byte, data ...byte) {
 func (d *Display) sendData(data ...byte) {
 	now := time.Now()
 	defer func(start time.Time) {
-		log.Printf("sendData: %s", time.Since(start).String())
+		d := time.Since(start)
+		if d > time.Millisecond {
+			log.Printf("sendData: %s", time.Since(start).String())
+		}
 	}(now)
 	batch := 2048
 	for i := 0; i < len(data); i += batch {
@@ -294,14 +297,15 @@ func convert(img image.Image, invert bool) []byte {
 	}(now)
 	buffer := make([]byte, BufSize, BufSize)
 	p := color.Palette([]color.Color{color.Black, color.White})
-	for j := 0; j < DisplayHeight; j++ {
-		for i := 0; i < DisplayWidth; i++ {
+	for y := 0; y < DisplayHeight; y++ {
+		row := y * DisplayWidthBytes
+		for x := 0; x < DisplayWidth; x++ {
 			c := 1
-			if i < img.Bounds().Dx() && j < img.Bounds().Dy() {
-				c = p.Index(img.At(i, j))
+			if (image.Point{x, y}).In(img.Bounds()) {
+				c = p.Index(img.At(x, y))
 			}
-			px := (i / 8) + (j * DisplayWidthBytes)
-			bit := byte(0x80 >> (uint32(i) % 8))
+			px := (x / 8) + row
+			bit := byte(0x80 >> (uint32(x) % 8))
 			if c == 0 {
 				if invert {
 					buffer[px] |= bit
@@ -330,8 +334,9 @@ func (d *Display) RenderPaletted(img image.Image) {
 	defer func(start time.Time) {
 		log.Printf("RenderPaletted: %s", time.Since(start).String())
 	}(now)
-	white, red, black := color.White, color.RGBA{255, 0, 0, 255}, color.Black
-	colors := []color.Color{white, red, black}
+	// This order is significant. We want to try to assign white and black before our third color,
+	// as they may be closer to a totally non-red color (blue).
+	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
 	p := color.Palette(colors)
 	// Handle images with exactly 3 colors specially, as we can map
 	// colors directly to display colors.
@@ -347,16 +352,19 @@ func (d *Display) RenderPaletted(img image.Image) {
 			ip = append(ip[:ci], ip[ci+1:]...)
 		}
 	}
+	white, black, red := 0, 1, 2
 	bImg := make([]byte, BufSize, BufSize)
 	rImg := make([]byte, BufSize, BufSize)
-	for j := 0; j < DisplayHeight; j++ {
-		for i := 0; i < DisplayWidth; i++ {
-			c := color.Color(color.White)
-			if i < img.Bounds().Dx() && j < img.Bounds().Dy() {
-				c = colors[p.Index(img.At(i, j))]
+	for y := 0; y < DisplayHeight; y++ {
+		row := y * DisplayWidthBytes
+		for x := 0; x < DisplayWidth; x++ {
+			var c int
+			//TODO use (*image.Paletted).ColorIndexAt()
+			if (image.Point{x, y}).In(img.Bounds()) {
+				c = p.Index(img.At(x, y))
 			}
-			px := (i / 8) + (j * DisplayWidthBytes)
-			bit := byte(0x80 >> (uint32(i) % 8))
+			px := (x / 8) + (row)
+			bit := byte(0x80 >> (uint32(x) % 8))
 			switch c {
 			case red:
 				bImg[px] |= bit
