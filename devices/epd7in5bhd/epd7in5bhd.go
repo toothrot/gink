@@ -13,7 +13,6 @@ import (
 	"log"
 	"time"
 
-	"periph.io/x/periph/conn"
 	"periph.io/x/periph/conn/gpio"
 	"periph.io/x/periph/conn/gpio/gpioreg"
 	"periph.io/x/periph/conn/physic"
@@ -43,17 +42,7 @@ const (
 //  DIN  - SPI0 MOSI - Pin 19 (GPIO 10)
 //  RST  - Reset     - Pin 11 (GPIO 17)
 type Display struct {
-	// c is a perhiph conn.Conn.
-	c conn.Conn
-
-	// busy pin, when waiting for device to be ready.
-	busy gpio.PinIO
-	// cs is the Chip Enable pin.
-	cs gpio.PinOut
-	// dc is the data/command pin.
-	dc gpio.PinOut
-	// rst is the CE1 pin.
-	rst gpio.PinOut
+	hw *hardware
 }
 
 type Pins struct {
@@ -127,6 +116,7 @@ func New(p Pins) (*Display, error) {
 		return nil, fmt.Errorf("spireg.Open(%q) = _, %w", "", err)
 	}
 	// 20Mhz is the max for write operations. 2.5Mhz is the max for read operations.
+	// Wire length and health impact the maximum workable speed.
 	c, err := port.Connect(20*physic.MegaHertz, spi.Mode0, 8)
 	if err != nil {
 		connerr := fmt.Errorf("port.Connect(%v, %v, %v) = %w", 5*physic.MegaHertz, spi.Mode0, 8, err)
@@ -137,56 +127,51 @@ func New(p Pins) (*Display, error) {
 	}
 
 	e := &Display{
-		c:    c,
-		dc:   dc,
-		cs:   cs,
-		rst:  rst,
-		busy: busy,
+		hw: &hardware{
+			txLimit: 2048,
+			c:       c,
+			dc:      dc,
+			cs:      cs,
+			rst:     rst,
+			busy:    busy,
+		},
 	}
 	return e, nil
 }
 
 // Reset can be also used to awaken the device.
 func (d *Display) Reset() {
-	d.rst.Out(gpio.High)
+	d.hw.rst.Out(gpio.High)
 	time.Sleep(200 * time.Millisecond)
-	d.rst.Out(gpio.Low)
+	d.hw.rst.Out(gpio.Low)
 	time.Sleep(2 * time.Millisecond)
-	d.rst.Out(gpio.High)
+	d.hw.rst.Out(gpio.High)
 	time.Sleep(200 * time.Millisecond)
 }
 
 func (d *Display) sendCommand(cmd byte, data ...byte) {
-	d.dc.Out(gpio.Low)
-	d.cs.Out(gpio.Low)
-	d.c.Tx([]byte{cmd}, nil)
-	d.cs.Out(gpio.High)
-	d.sendData(data...)
-}
-
-func (d *Display) sendData(data ...byte) {
 	now := time.Now()
 	defer func(start time.Time) {
 		d := time.Since(start)
 		if d > time.Millisecond {
-			log.Printf("sendData: %s", time.Since(start).String())
+			log.Printf("sendCommand: %s", time.Since(start).String())
 		}
 	}(now)
-	batch := 2048
-	for i := 0; i < len(data); i += batch {
-		j := i + batch
-		if j > len(data) {
-			j = len(data)
-		}
-		d.cs.Out(gpio.Low)
-		d.dc.Out(gpio.High)
-		d.c.Tx(data[i:j], nil)
-		d.cs.Out(gpio.High)
+	n, err := (&commandWriter{d.hw}).Write(append([]byte{cmd}, data...))
+	if err != nil {
+		log.Printf("sendCommand Write() = %d, %v", n, err)
+	}
+}
+
+func (d *Display) sendData(data []byte) {
+	b := &batchedWriter{dst: &dataWriter{d.hw}, batchSize: d.hw.txLimit}
+	if n, err := b.Write(data); err != nil {
+		log.Printf("sendData failed: %d, %v", n, err)
 	}
 }
 
 func (d *Display) waitUntilIdle() {
-	for d.busy.Read() == gpio.Low {
+	for d.hw.busy.Read() == gpio.Low {
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -262,19 +247,13 @@ func (d *Display) Render(blackImg, redImg []byte) {
 	}(now)
 	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
 
-	d.sendCommand(writeRAMBW)
-	d.sendData(blackImg...)
-	if n := BufSize - len(blackImg); n > 0 {
-		// 1 is white, 0 is black.
-		d.sendData(bytes.Repeat([]byte{0xFF}, n)...)
-	}
+	// 1 is white, 0 is black.
+	blackPad := bytes.Repeat([]byte{0xFF}, BufSize-len(blackImg))
+	d.sendCommand(writeRAMBW, append(blackImg, blackPad...)...)
 
-	d.sendCommand(writeRAMRed)
-	d.sendData(redImg...)
-	if n := BufSize - len(redImg); n > 0 {
-		// 0 is white or black, 1 is red.
-		d.sendData(bytes.Repeat([]byte{0x00}, n)...)
-	}
+	// 0 is white or black, 1 is red.
+	redPad := bytes.Repeat([]byte{0x00}, BufSize-len(redImg))
+	d.sendCommand(writeRAMRed, append(redImg, redPad...)...)
 	d.turnOnDisplay()
 }
 

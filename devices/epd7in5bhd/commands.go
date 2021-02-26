@@ -1,4 +1,3 @@
-// Package commands contains constants representing different commands to send to the device.
 package epd7in5bhd
 
 const (
