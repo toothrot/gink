@@ -276,27 +276,23 @@ func convert(img image.Image, invert bool) []byte {
 	}(now)
 	buffer := make([]byte, BufSize, BufSize)
 	p := color.Palette([]color.Color{color.Black, color.White})
+	if invert {
+		p = []color.Color{color.White, color.Black}
+	}
+	w := p.Index(color.White)
 	for y := 0; y < DisplayHeight; y++ {
 		row := y * DisplayWidthBytes
 		for x := 0; x < DisplayWidth; x++ {
-			c := 1
+			c := w
 			if (image.Point{x, y}).In(img.Bounds()) {
 				c = p.Index(img.At(x, y))
 			}
 			px := (x / 8) + row
 			bit := byte(0x80 >> (uint32(x) % 8))
 			if c == 0 {
-				if invert {
-					buffer[px] |= bit
-				} else {
-					buffer[px] &= ^bit
-				}
+				buffer[px] &= ^bit
 			} else {
-				if invert {
-					buffer[px] &= ^bit
-				} else {
-					buffer[px] |= bit
-				}
+				buffer[px] |= bit
 			}
 		}
 	}
