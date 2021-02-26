@@ -13,7 +13,7 @@ import (
 
 	"github.com/disintegration/imaging"
 	"github.com/fogleman/gg"
-	"github.com/toothrot/gowaveshare/devices/epd7in5bhd"
+	"github.com/toothrot/gink/devices/epd7in5bhd"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"

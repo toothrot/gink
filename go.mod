@@ -1,4 +1,4 @@
-module github.com/toothrot/gowaveshare
+module github.com/toothrot/gink
 
 go 1.16
 

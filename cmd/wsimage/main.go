@@ -15,8 +15,8 @@ import (
 
 	"github.com/disintegration/imaging"
 	"github.com/makeworld-the-better-one/dither"
-	"github.com/toothrot/gowaveshare/devices/epd7in5bhd"
-	"github.com/toothrot/gowaveshare/static"
+	"github.com/toothrot/gink/devices/epd7in5bhd"
+	"github.com/toothrot/gink/static"
 )
 
 var (
