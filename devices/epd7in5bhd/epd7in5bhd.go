@@ -157,15 +157,14 @@ func (d *Display) sendCommand(cmd command, data ...byte) {
 			log.Printf("sendCommand: %s", time.Since(start).String())
 		}
 	}(now)
-	n, err := (&commandWriter{d.hw}).Write(append([]byte{byte(cmd)}, data...))
+	n, err := d.hw.CommandWriter().Write(append([]byte{byte(cmd)}, data...))
 	if err != nil {
 		log.Printf("sendCommand Write() = %d, %v", n, err)
 	}
 }
 
 func (d *Display) sendData(data []byte) {
-	b := &batchedWriter{dst: &dataWriter{d.hw}, batchSize: d.hw.txLimit}
-	if n, err := b.Write(data); err != nil {
+	if n, err := d.hw.DataWriter().Write(data); err != nil {
 		log.Printf("sendData failed: %d, %v", n, err)
 	}
 }
@@ -334,7 +333,7 @@ func (d *Display) RenderPaletted(img image.Image) {
 		row := y * DisplayWidthBytes
 		for x := 0; x < DisplayWidth; x++ {
 			var c int
-			//TODO use (*image.Paletted).ColorIndexAt()
+			//TODO use (*image.Paletted).ColorIndexAt() when we have a 3-color image.
 			if (image.Point{x, y}).In(img.Bounds()) {
 				c = p.Index(img.At(x, y))
 			}

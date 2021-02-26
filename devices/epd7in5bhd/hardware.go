@@ -26,6 +26,14 @@ type hardware struct {
 	rst gpio.PinOut
 }
 
+func (h *hardware) DataWriter() io.Writer {
+	return &batchedWriter{&dataWriter{h}, h.txLimit}
+}
+
+func (h *hardware) CommandWriter() io.Writer {
+	return &commandWriter{h}
+}
+
 type dataWriter struct {
 	*hardware
 }
@@ -97,7 +105,7 @@ func (w *commandWriter) Write(p []byte) (int, error) {
 	if len(data) == 0 {
 		return 1, nil
 	}
-	n, err := (&batchedWriter{&dataWriter{w.hardware}, w.txLimit}).Write(data)
+	n, err := w.DataWriter().Write(data)
 	return 1 + n, err
 }
 
