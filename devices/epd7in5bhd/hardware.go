@@ -3,6 +3,7 @@ package epd7in5bhd
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"periph.io/x/periph/conn"
 	"periph.io/x/periph/conn/gpio"
@@ -11,6 +12,7 @@ import (
 type hardware struct {
 	txLimit int
 
+	mut sync.Mutex
 	// c is a perhiph conn.Conn.
 	c conn.Conn
 
@@ -29,6 +31,8 @@ type dataWriter struct {
 }
 
 func (w *dataWriter) Write(p []byte) (n int, err error) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -63,6 +67,8 @@ type commandWriter struct {
 }
 
 func (w *commandWriter) writeCommand(p byte) (err error) {
+	w.mut.Lock()
+	defer w.mut.Unlock()
 	if err := w.dc.Out(gpio.Low); err != nil {
 		return fmt.Errorf("%v.Out(%v) = %w", w.dc.String(), gpio.Low.String(), err)
 	}
@@ -75,7 +81,7 @@ func (w *commandWriter) writeCommand(p byte) (err error) {
 		}
 	}()
 	if err := w.c.Tx([]byte{p}, nil); err != nil {
-		return err
+		return fmt.Errorf("sending command %s: %w", command(p).String(), err)
 	}
 	return nil
 }
