@@ -149,7 +149,7 @@ func (d *Display) Reset() {
 	time.Sleep(200 * time.Millisecond)
 }
 
-func (d *Display) sendCommand(cmd byte, data ...byte) {
+func (d *Display) sendCommand(cmd command, data ...byte) {
 	now := time.Now()
 	defer func(start time.Time) {
 		d := time.Since(start)
@@ -157,7 +157,7 @@ func (d *Display) sendCommand(cmd byte, data ...byte) {
 			log.Printf("sendCommand: %s", time.Since(start).String())
 		}
 	}(now)
-	n, err := (&commandWriter{d.hw}).Write(append([]byte{cmd}, data...))
+	n, err := (&commandWriter{d.hw}).Write(append([]byte{byte(cmd)}, data...))
 	if err != nil {
 		log.Printf("sendCommand Write() = %d, %v", n, err)
 	}
