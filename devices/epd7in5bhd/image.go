@@ -44,9 +44,11 @@ func NewImage(r image.Rectangle) *Image {
 	}
 	bufSize := r.Dy() * widthByte
 	return &Image{
-		Black:     bytes.Repeat([]byte{0xff}, bufSize),
-		Highlight: make([]byte, bufSize, bufSize),
-		Rect:      r,
+		Black:          bytes.Repeat([]byte{0xff}, bufSize),
+		Highlight:      make([]byte, bufSize, bufSize),
+		Rect:           r,
+		rectWidthBytes: widthByte,
+		Palette:        defaultPalette,
 	}
 }
 
@@ -56,23 +58,45 @@ type Image struct {
 	Black []byte
 	// Highlights are represented as 0 white, 1 highlight.
 	// Images are stored as a bit per pixel.
-	Highlight []byte
-	Rect      image.Rectangle
+	Highlight      []byte
+	Rect           image.Rectangle
+	Palette        color.Palette
+	rectWidthBytes int
+}
+
+func (i *Image) SetColorIndex(x, y int, index uint8) {
+	px := (x / 8) + (y * i.rectWidthBytes)
+	if px >= len(i.Black) {
+		return
+	}
+	bit := byte(0x80 >> (uint32(x) % 8))
+	switch index {
+	case 0:
+		i.Black[px] |= bit
+		i.Highlight[px] &= ^bit
+	case 1:
+		i.Black[px] &= ^bit
+		i.Highlight[px] &= ^bit
+	case 2:
+		i.Black[px] |= bit
+		i.Highlight[px] |= bit
+	}
+	return
 }
 
 func (i *Image) Set(x, y int, c color.Color) {
-	if !(image.Point{x, y}.In(i.Rect)) {
+	px := (x / 8) + (y * i.rectWidthBytes)
+	if px >= len(i.Black) {
 		return
 	}
-	var pi int
-	if cc, ok := c.(Color); ok {
-		pi = int(cc.C)
+	var cc Color
+	if native, ok := c.(Color); ok {
+		cc = native
 	} else {
-		pi = defaultPalette.Index(c)
+		cc = i.Palette.Convert(c).(Color)
 	}
-	px := (x / 8) + y*DisplayWidthBytes
 	bit := byte(0x80 >> (uint32(x) % 8))
-	switch pi {
+	switch cc.C {
 	case 0:
 		i.Black[px] |= bit
 		i.Highlight[px] &= ^bit

@@ -14,6 +14,7 @@ import (
 	"log"
 	"time"
 
+	"golang.org/x/image/draw"
 	"periph.io/x/periph/conn/gpio"
 	"periph.io/x/periph/conn/gpio/gpioreg"
 	"periph.io/x/periph/conn/physic"
@@ -129,7 +130,7 @@ func New(p Pins) (*Display, error) {
 
 	e := &Display{
 		hw: &hardware{
-			txLimit: 4096,
+			txLimit: 2048,
 			c:       c,
 			dc:      dc,
 			cs:      cs,
@@ -270,12 +271,12 @@ func (d *Display) RenderPaletted(img image.Image) {
 	defer func(start time.Time) {
 		log.Printf("RenderPaletted: %s", time.Since(start).String())
 	}(now)
-	bbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
-	rbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
-	Encode(bbuf, rbuf, img)
 
 	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
-	d.sendCommand(writeRAMBW, bbuf.Bytes()...)
+	d.sendCommand(writeRAMBW)
+	//bbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
+	rbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
+	Encode(d.hw.DataWriter(), rbuf, img)
 
 	d.sendCommand(writeRAMRed, rbuf.Bytes()...)
 	d.turnOnDisplay()
@@ -288,78 +289,50 @@ func (d *Display) Sleep() {
 	d.sendCommand(deepSleepMode, 0x01) //deep sleep
 }
 
-//// Convert converts the input image into a byte buffer suitable for Display.Render.
-//func Convert(img image.Image) []byte {
-//	return convert(img, false)
-//}
-//
-func convert(img image.Image, invert bool) []byte {
+// Convert converts the input image into a byte buffer suitable for Display.Render.
+func convert(img image.Image, p color.Palette) *Image {
 	now := time.Now()
 	defer func(start time.Time) {
 		log.Printf("Convert: %s", time.Since(start).String())
 	}(now)
-	buffer := make([]byte, BufSize, BufSize)
-	p := color.Palette([]color.Color{color.Black, color.White})
-	if invert {
-		p = []color.Color{color.White, color.Black}
-	}
-	w := p.Index(color.White)
-	for y := 0; y < DisplayHeight; y++ {
-		row := y * DisplayWidthBytes
-		for x := 0; x < DisplayWidth; x++ {
-			c := w
-			if (image.Point{x, y}).In(img.Bounds()) {
-				c = p.Index(img.At(x, y))
-			}
-			px := (x / 8) + row
-			bit := byte(0x80 >> (uint32(x) % 8))
-			if c == 0 {
-				buffer[px] &= ^bit
-			} else {
-				buffer[px] |= bit
-			}
-		}
-	}
-
-	return buffer
+	bounds := img.Bounds()
+	dst := NewImage(bounds)
+	dst.Palette = p
+	draw.Draw(dst, bounds, img, image.Point{0, 0}, draw.Src)
+	return dst
 }
 
-func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
+func Encode(dstBlack, dstRed io.Writer, img image.Image) {
 	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
 		encodeExactColors(dstBlack, dstRed, pi)
 		return
 	}
-	white, black, highlight := 0, 1, 2
-	var rbyte, bbyte byte
-	pt := image.Point{}
 	bounds := img.Bounds()
-	for y := 0; y < DisplayHeight; y++ {
-		pt.Y = y
-		for x := 0; x < DisplayWidth; x++ {
-			pt.X = x
-			var c int
-			if (pt).In(bounds) {
-				c = defaultPalette.Index(img.At(x, y))
-			}
-			bit := byte(0x80 >> (uint32(x) % 8))
-			switch c {
-			case highlight:
-				bbyte |= bit
-				rbyte |= bit
-			case black:
-				bbyte &= ^bit
-				rbyte &= ^bit
+	dst := NewImage(bounds)
+	draw.Draw(dst, bounds, img, image.Point{0, 0}, draw.Src)
+	dstBlack.Write(dst.Black)
+	dstRed.Write(dst.Highlight)
+}
+
+func encodeExactColors(dstBlack, dstRed io.Writer, img *image.Paletted) {
+	white, black, highlight := exactColorIndex(img)
+	bounds := img.Bounds()
+	dst := NewImage(bounds)
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			i := int(img.ColorIndexAt(x, y))
+			switch i {
 			case white:
-				bbyte |= bit
-				rbyte &= ^bit
-			}
-			if (x % 8) == 0 {
-				dstBlack.WriteByte(bbyte)
-				dstRed.WriteByte(rbyte)
-				rbyte, bbyte = 0x00, 0x00
+				dst.SetColorIndex(x, y, 0)
+			case black:
+				dst.SetColorIndex(x, y, 1)
+			case highlight:
+				dst.SetColorIndex(x, y, 2)
 			}
 		}
 	}
+	dstBlack.Write(dst.Black)
+	dstRed.Write(dst.Highlight)
 }
 
 func exactColorIndex(img *image.Paletted) (white, black, highlight int) {
@@ -382,45 +355,12 @@ func exactColorIndex(img *image.Paletted) (white, black, highlight int) {
 	return img.Palette.Index(p[0]), img.Palette.Index(p[1]), img.Palette.Index(p[2])
 }
 
-func encodeExactColors(dstBlack, dstRed io.ByteWriter, img *image.Paletted) {
-	white, black, highlight := exactColorIndex(img)
-	var rbyte, bbyte byte
-	pt := image.Point{}
-	bounds := img.Bounds()
-	for y := 0; y < DisplayHeight; y++ {
-		pt.Y = y
-		for x := 0; x < DisplayWidth; x++ {
-			pt.X = x
-			var c int
-			if (pt).In(bounds) {
-				c = int(img.ColorIndexAt(x, y))
-			}
-			bit := byte(0x80 >> (uint32(x) % 8))
-			switch c {
-			case highlight:
-				bbyte |= bit
-				rbyte |= bit
-			case black:
-				bbyte &= ^bit
-				rbyte &= ^bit
-			case white:
-				bbyte |= bit
-				rbyte &= ^bit
-			}
-			if (x % 8) == 0 {
-				dstBlack.WriteByte(bbyte)
-				dstRed.WriteByte(rbyte)
-				rbyte, bbyte = 0x00, 0x00
-			}
-		}
-	}
-}
-
 // RenderImages renders a black image and a red/yellow image on the display.
 func (d *Display) RenderImages(black, redyellow image.Image) {
 	now := time.Now()
 	defer func(start time.Time) {
 		log.Printf("RenderImages: %s", time.Since(start).String())
 	}(now)
-	d.Render(convert(black, false), convert(redyellow, true))
+	bi, hi := convert(black, color.Palette{White, Black}), convert(redyellow, color.Palette{White, Highlight})
+	d.Render(bi.Black, hi.Highlight)
 }
