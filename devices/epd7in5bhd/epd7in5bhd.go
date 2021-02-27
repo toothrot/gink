@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"log"
 	"time"
 
@@ -128,7 +129,7 @@ func New(p Pins) (*Display, error) {
 
 	e := &Display{
 		hw: &hardware{
-			txLimit: 2048,
+			txLimit: 4096,
 			c:       c,
 			dc:      dc,
 			cs:      cs,
@@ -170,10 +171,14 @@ func (d *Display) sendData(data []byte) {
 }
 
 func (d *Display) waitUntilIdle() {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("waitUntilIdle: %s", time.Since(start).String())
+	}(now)
 	for d.hw.busy.Read() == gpio.Low {
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 }
 
 func (d *Display) turnOnDisplay() {
@@ -256,6 +261,26 @@ func (d *Display) Render(blackImg, redImg []byte) {
 	d.turnOnDisplay()
 }
 
+// RenderPaletted renders an image in 3 colors (black, white and red/yellow).
+//
+// If img is a *image.Paletted with exactly 3 colors, each color will be assigned to its
+// nearest by euclidean distance. Otherwise, colors will be assigned by a per-pixel calculation.
+func (d *Display) RenderPaletted(img image.Image) {
+	now := time.Now()
+	defer func(start time.Time) {
+		log.Printf("RenderPaletted: %s", time.Since(start).String())
+	}(now)
+	bbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
+	rbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
+	Encode(bbuf, rbuf, img)
+
+	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
+	d.sendCommand(writeRAMBW, bbuf.Bytes()...)
+
+	d.sendCommand(writeRAMRed, rbuf.Bytes()...)
+	d.turnOnDisplay()
+}
+
 // Sleep tells the Display to enter deepSleepMode.
 //
 // The display can be reawakened with Reset(), and re-initialized with Init().
@@ -299,60 +324,101 @@ func convert(img image.Image, invert bool) []byte {
 	return buffer
 }
 
-// RenderPaletted renders an image in 3 colors (black, white and red/yellow).
-//
-// If img is a *image.Paletted with exactly 3 colors, each color will be assigned to its
-// nearest by euclidean distance. Otherwise, colors will be assigned by a per-pixel calculation.
-func (d *Display) RenderPaletted(img image.Image) {
+func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
 	now := time.Now()
 	defer func(start time.Time) {
-		log.Printf("RenderPaletted: %s", time.Since(start).String())
+		log.Printf("Encode: %s", time.Since(start).String())
 	}(now)
-	// This order is significant. We want to try to assign white and black before our third color,
-	// as they may be closer to a totally non-red color (blue).
+	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
+		encodeExactColors(dstBlack, dstRed, pi)
+		return
+	}
 	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
 	p := color.Palette(colors)
-	// Handle images with exactly 3 colors specially, as we can map
-	// colors directly to display colors.
-	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
-		p = color.Palette{}
-		ip := make(color.Palette, len(pi.Palette))
-		copy(ip, pi.Palette)
-		// Iterate over colors, removing as we go to avoid duplicates.
-		// We don't want both faint red and white to be white.
-		for _, c := range colors {
-			ci := ip.Index(c)
-			p = append(p, ip[ci])
-			ip = append(ip[:ci], ip[ci+1:]...)
-		}
-	}
 	white, black, red := 0, 1, 2
-	bImg := make([]byte, BufSize, BufSize)
-	rImg := make([]byte, BufSize, BufSize)
+	var rbyte, bbyte byte
+	pt := image.Point{}
+	bounds := img.Bounds()
 	for y := 0; y < DisplayHeight; y++ {
-		row := y * DisplayWidthBytes
+		pt.Y = y
 		for x := 0; x < DisplayWidth; x++ {
+			pt.X = x
 			var c int
-			//TODO use (*image.Paletted).ColorIndexAt() when we have a 3-color image.
-			if (image.Point{x, y}).In(img.Bounds()) {
+			if (pt).In(bounds) {
 				c = p.Index(img.At(x, y))
 			}
-			px := (x / 8) + (row)
 			bit := byte(0x80 >> (uint32(x) % 8))
 			switch c {
 			case red:
-				bImg[px] |= bit
-				rImg[px] |= bit
+				bbyte |= bit
+				rbyte |= bit
 			case black:
-				bImg[px] &= ^bit
-				rImg[px] &= ^bit
+				bbyte &= ^bit
+				rbyte &= ^bit
 			case white:
-				bImg[px] |= bit
-				rImg[px] &= ^bit
+				bbyte |= bit
+				rbyte &= ^bit
+			}
+			if (x % 8) == 0 {
+				dstBlack.WriteByte(bbyte)
+				dstRed.WriteByte(rbyte)
+				rbyte, bbyte = 0x00, 0x00
 			}
 		}
 	}
-	d.Render(bImg, rImg)
+}
+
+func encodeExactColors(dstBlack, dstRed io.ByteWriter, img *image.Paletted) {
+	// This order is significant. We want to try to assign white and black before our third color,
+	// as they may be closer to a totally non-red color (blue).
+	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
+	white, black, red := 0, 1, 2
+	p := color.Palette{}
+	ip := make(color.Palette, len(img.Palette))
+	copy(ip, img.Palette)
+	// Iterate over colors, popping as we go to avoid duplicates.
+	// We don't want both faint red and white to be white.
+	// p ends up as a color.Palette sorted:
+	// img.Palette lightest, img.Palette darkest, img.Palette remaining
+	for _, c := range colors {
+		ci := ip.Index(c)
+		p = append(p, ip[ci])
+		ip = append(ip[:ci], ip[ci+1:]...)
+	}
+	// Now, set our mapping from the original palate sort order
+	white = img.Palette.Index(p[0])
+	black = img.Palette.Index(p[1])
+	red = img.Palette.Index(p[2])
+	var rbyte, bbyte byte
+	pt := image.Point{}
+	bounds := img.Bounds()
+	for y := 0; y < DisplayHeight; y++ {
+		pt.Y = y
+		for x := 0; x < DisplayWidth; x++ {
+			pt.X = x
+			var c int
+			if (pt).In(bounds) {
+				c = int(img.ColorIndexAt(x, y))
+			}
+			bit := byte(0x80 >> (uint32(x) % 8))
+			switch c {
+			case red:
+				bbyte |= bit
+				rbyte |= bit
+			case black:
+				bbyte &= ^bit
+				rbyte &= ^bit
+			case white:
+				bbyte |= bit
+				rbyte &= ^bit
+			}
+			if (x % 8) == 0 {
+				dstBlack.WriteByte(bbyte)
+				dstRed.WriteByte(rbyte)
+				rbyte, bbyte = 0x00, 0x00
+			}
+		}
+	}
 }
 
 // RenderImages renders a black image and a red/yellow image on the display.

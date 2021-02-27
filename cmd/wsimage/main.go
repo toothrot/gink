@@ -22,7 +22,7 @@ import (
 )
 
 var (
-	rotate = flag.Float64("rotate", 0.0, "Image rotation in degrees.")
+	rotate     = flag.Float64("rotate", 0.0, "Image rotation in degrees.")
 	cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 )
 
@@ -94,7 +94,7 @@ func main() {
 	dith = dither.NewDitherer(colors)
 	dith.Matrix = dither.FloydSteinberg
 	dith.Serpentine = true
-	d.RenderPaletted(dith.DitherPaletted(cimg))
+	d.RenderPaletted(dith.DitherPaletted(imaging.AdjustBrightness(imaging.AdjustContrast(cimg, 25), 25)))
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
