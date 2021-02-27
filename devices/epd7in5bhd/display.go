@@ -325,17 +325,12 @@ func convert(img image.Image, invert bool) []byte {
 }
 
 func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
-	now := time.Now()
-	defer func(start time.Time) {
-		log.Printf("Encode: %s", time.Since(start).String())
-	}(now)
 	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
 		encodeExactColors(dstBlack, dstRed, pi)
 		return
 	}
-	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
-	p := color.Palette(colors)
-	white, black, red := 0, 1, 2
+	p := color.Palette([]color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}})
+	white, black, highlight := 0, 1, 2
 	var rbyte, bbyte byte
 	pt := image.Point{}
 	bounds := img.Bounds()
@@ -349,7 +344,7 @@ func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
 			}
 			bit := byte(0x80 >> (uint32(x) % 8))
 			switch c {
-			case red:
+			case highlight:
 				bbyte |= bit
 				rbyte |= bit
 			case black:
@@ -368,27 +363,28 @@ func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
 	}
 }
 
-func encodeExactColors(dstBlack, dstRed io.ByteWriter, img *image.Paletted) {
+func exactColorIndex(img *image.Paletted) (white, black, highlight int) {
 	// This order is significant. We want to try to assign white and black before our third color,
 	// as they may be closer to a totally non-red color (blue).
 	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
-	white, black, red := 0, 1, 2
 	p := color.Palette{}
 	ip := make(color.Palette, len(img.Palette))
 	copy(ip, img.Palette)
+	// Sort Palette p:
+	// img.Palette lightest, img.Palette darkest, img.Palette remaining
 	// Iterate over colors, popping as we go to avoid duplicates.
 	// We don't want both faint red and white to be white.
-	// p ends up as a color.Palette sorted:
-	// img.Palette lightest, img.Palette darkest, img.Palette remaining
 	for _, c := range colors {
 		ci := ip.Index(c)
 		p = append(p, ip[ci])
 		ip = append(ip[:ci], ip[ci+1:]...)
 	}
-	// Now, set our mapping from the original palate sort order
-	white = img.Palette.Index(p[0])
-	black = img.Palette.Index(p[1])
-	red = img.Palette.Index(p[2])
+	// Now, map our expected order to img.Paletted.Palette's order
+	return img.Palette.Index(p[0]), img.Palette.Index(p[1]), img.Palette.Index(p[2])
+}
+
+func encodeExactColors(dstBlack, dstRed io.ByteWriter, img *image.Paletted) {
+	white, black, highlight := exactColorIndex(img)
 	var rbyte, bbyte byte
 	pt := image.Point{}
 	bounds := img.Bounds()
@@ -402,7 +398,7 @@ func encodeExactColors(dstBlack, dstRed io.ByteWriter, img *image.Paletted) {
 			}
 			bit := byte(0x80 >> (uint32(x) % 8))
 			switch c {
-			case red:
+			case highlight:
 				bbyte |= bit
 				rbyte |= bit
 			case black:
