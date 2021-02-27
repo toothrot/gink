@@ -329,7 +329,6 @@ func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
 		encodeExactColors(dstBlack, dstRed, pi)
 		return
 	}
-	p := color.Palette([]color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}})
 	white, black, highlight := 0, 1, 2
 	var rbyte, bbyte byte
 	pt := image.Point{}
@@ -340,7 +339,7 @@ func Encode(dstBlack, dstRed io.ByteWriter, img image.Image) {
 			pt.X = x
 			var c int
 			if (pt).In(bounds) {
-				c = p.Index(img.At(x, y))
+				c = defaultPalette.Index(img.At(x, y))
 			}
 			bit := byte(0x80 >> (uint32(x) % 8))
 			switch c {
