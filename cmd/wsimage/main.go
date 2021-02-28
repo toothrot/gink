@@ -66,17 +66,17 @@ func main() {
 	}
 
 	log.Println("Displaying image")
-	d.RenderImages(bimg, rimg)
+	d.DrawAndRefreshImages(bimg, rimg)
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
 	log.Println("Displaying image")
-	d.RenderPaletted(comb)
+	d.DrawAndRefresh(comb)
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
 	log.Println("Displaying image")
-	d.RenderPaletted(imaging.Fill(cimg, epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, imaging.Center, imaging.Lanczos))
+	d.DrawAndRefresh(imaging.Fill(cimg, epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, imaging.Center, imaging.Lanczos))
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
@@ -85,7 +85,7 @@ func main() {
 	dith := dither.NewDitherer(colors)
 	dith.Matrix = dither.FloydSteinberg
 	dith.Serpentine = true
-	d.RenderPaletted(dith.DitherPaletted(cimg))
+	d.DrawAndRefresh(dith.DitherPaletted(cimg))
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 
@@ -94,7 +94,7 @@ func main() {
 	dith = dither.NewDitherer(colors)
 	dith.Matrix = dither.FloydSteinberg
 	dith.Serpentine = true
-	d.RenderPaletted(dith.DitherPaletted(imaging.AdjustBrightness(imaging.AdjustContrast(cimg, 25), 25)))
+	d.DrawAndRefresh(dith.DitherPaletted(imaging.AdjustBrightness(imaging.AdjustContrast(cimg, 25), 25)))
 	log.Printf("Waiting %vs", epd7in5bhd.DefaultWait.Seconds())
 	time.Sleep(epd7in5bhd.DefaultWait)
 

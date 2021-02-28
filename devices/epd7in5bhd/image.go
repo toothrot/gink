@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"io"
+
+	"golang.org/x/image/draw"
 )
 
 var (
@@ -133,4 +136,62 @@ func (i *Image) At(x, y int) color.Color {
 		return White
 	}
 	return Black
+}
+
+func (i *Image) Reset() {
+	i.Black = bytes.Repeat([]byte{0xff}, len(i.Black))
+	i.Highlight = make([]byte, len(i.Highlight), len(i.Highlight))
+}
+
+// drawExactColors is a fast-path for when we have exactly 3 colors in the src image.
+//
+// If src is a *image.Paletted with exactly 3 colors, each color will be assigned to its
+// nearest by euclidean distance. Otherwise, colors will be assigned by a per-pixel calculation.
+func (i *Image) drawExactColors(src *image.Paletted) {
+	white, black, highlight := exactColorIndex(src)
+	for y := 0; y < DisplayBounds.Dy(); y++ {
+		for x := 0; x < DisplayBounds.Dx(); x++ {
+			switch int(src.ColorIndexAt(x, y)) {
+			case white:
+				i.SetColorIndex(x, y, 0)
+			case black:
+				i.SetColorIndex(x, y, 1)
+			case highlight:
+				i.SetColorIndex(x, y, 2)
+			}
+		}
+	}
+}
+
+func exactColorIndex(src *image.Paletted) (white, black, highlight int) {
+	// This order is significant. We want to try to assign white and black before our third color,
+	// as they may be closer to a totally non-red color (blue).
+	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
+	p := color.Palette{}
+	ip := make(color.Palette, len(src.Palette))
+	copy(ip, src.Palette)
+	// Sort Palette p:
+	// src.Palette lightest, src.Palette darkest, src.Palette remaining
+	// Iterate over colors, popping as we go to avoid duplicates.
+	// We don't want both faint red and white to be white.
+	for _, c := range colors {
+		ci := ip.Index(c)
+		p = append(p, ip[ci])
+		ip = append(ip[:ci], ip[ci+1:]...)
+	}
+	// Now, map our expected order to src.Paletted.Palette's order
+	return src.Palette.Index(p[0]), src.Palette.Index(p[1]), src.Palette.Index(p[2])
+}
+
+// Encode encodes an image to the display's wire format.
+func Encode(dstBlack, dstRed io.Writer, img image.Image) {
+	bounds := img.Bounds()
+	dst := NewImage(bounds)
+	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
+		dst.drawExactColors(pi)
+	} else {
+		draw.Draw(dst, bounds, img, image.Point{0, 0}, draw.Src)
+	}
+	dstBlack.Write(dst.Black)
+	dstRed.Write(dst.Highlight)
 }

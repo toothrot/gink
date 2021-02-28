@@ -73,7 +73,7 @@ func update(d *epd7in5bhd.Display, text string) {
 	rot := imaging.Rotate(ctx.Image(), *rotate, color.White)
 	fit := imaging.Fit(rot, epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, imaging.Lanczos)
 	final := imaging.PasteCenter(imaging.New(epd7in5bhd.DisplayWidth, epd7in5bhd.DisplayHeight, color.White), fit)
-	d.RenderPaletted(final)
+	d.DrawAndRefresh(final)
 	d.Sleep()
 }
 

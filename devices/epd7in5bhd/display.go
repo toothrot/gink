@@ -7,20 +7,13 @@ package epd7in5bhd
 
 import (
 	"bytes"
-	"fmt"
 	"image"
 	"image/color"
-	"io"
 	"log"
 	"time"
 
 	"golang.org/x/image/draw"
 	"periph.io/x/periph/conn/gpio"
-	"periph.io/x/periph/conn/gpio/gpioreg"
-	"periph.io/x/periph/conn/physic"
-	"periph.io/x/periph/conn/spi"
-	"periph.io/x/periph/conn/spi/spireg"
-	"periph.io/x/periph/host"
 )
 
 const (
@@ -34,6 +27,10 @@ const (
 	BufSize = DisplayWidthBytes * DisplayHeight
 )
 
+var (
+	DisplayBounds = image.Rect(0, 0, DisplayWidth, DisplayHeight)
+)
+
 // Display is a client for the e-Paper display.
 //
 // Standard pin locations are as follows:
@@ -45,6 +42,7 @@ const (
 //  RST  - Reset     - Pin 11 (GPIO 17)
 type Display struct {
 	hw *hardware
+	buffer *Image
 }
 
 type Pins struct {
@@ -77,71 +75,19 @@ var DefaultWait = 25 * time.Second
 //    // Handle error.
 //  }
 func New(p Pins) (*Display, error) {
-	if _, err := host.Init(); err != nil {
-		return nil, fmt.Errorf("host.Init() = %w", err)
-	}
-
-	dc := gpioreg.ByName(p.DC)
-	if dc == nil {
-		return nil, fmt.Errorf("invalid dc pin %q", p.DC)
-	}
-	if err := dc.Out(gpio.Low); err != nil {
-		return nil, fmt.Errorf("dc.Out(%v) = %w", gpio.Low, err)
-	}
-
-	cs := gpioreg.ByName(p.CS)
-	if cs == nil {
-		return nil, fmt.Errorf("invalid cs pin %q", p.CS)
-	}
-	if err := cs.Out(gpio.Low); err != nil {
-		return nil, fmt.Errorf("cs.Out(%v) = %w", gpio.Low, err)
-	}
-
-	rst := gpioreg.ByName(p.RST)
-	if rst == nil {
-		return nil, fmt.Errorf("invalid rst pin %q", p.RST)
-	}
-	if err := rst.Out(gpio.Low); err != nil {
-		return nil, fmt.Errorf("rst.Out(%v) = %w", gpio.Low, err)
-	}
-
-	busy := gpioreg.ByName(p.Busy)
-	if busy == nil {
-		return nil, fmt.Errorf("invalid busy pin %q", p.Busy)
-	}
-	if err := busy.In(gpio.PullDown, gpio.RisingEdge); err != nil {
-		return nil, fmt.Errorf("busy.In(%v, %v) = %w", gpio.PullDown, gpio.RisingEdge, err)
-	}
-
-	port, err := spireg.Open("")
+	hw, err := newHardware(p)
 	if err != nil {
-		return nil, fmt.Errorf("spireg.Open(%q) = _, %w", "", err)
+		return nil, err
 	}
-	// 20Mhz is the max for write operations. 2.5Mhz is the max for read operations.
-	// Wire length and health impact the maximum workable speed.
-	c, err := port.Connect(20*physic.MegaHertz, spi.Mode0, 8)
-	if err != nil {
-		connerr := fmt.Errorf("port.Connect(%v, %v, %v) = %w", 5*physic.MegaHertz, spi.Mode0, 8, err)
-		if err := port.Close(); err != nil {
-			return nil, fmt.Errorf("port.Close() = %w while handling %q", err, connerr)
-		}
-		return nil, connerr
-	}
-
-	e := &Display{
-		hw: &hardware{
-			txLimit: 2048,
-			c:       c,
-			dc:      dc,
-			cs:      cs,
-			rst:     rst,
-			busy:    busy,
-		},
-	}
-	return e, nil
+	return &Display{
+		hw: hw,
+		buffer: NewImage(DisplayBounds),
+	}, nil
 }
 
-// Reset can be also used to awaken the device.
+// Reset clears all variables set on the Display.
+//
+// Reset can be also used to awaken the device after a call to Sleep.
 func (d *Display) Reset() {
 	d.hw.rst.Out(gpio.High)
 	time.Sleep(200 * time.Millisecond)
@@ -152,36 +98,22 @@ func (d *Display) Reset() {
 }
 
 func (d *Display) sendCommand(cmd command, data ...byte) {
-	now := time.Now()
-	defer func(start time.Time) {
-		d := time.Since(start)
-		if d > time.Millisecond {
-			log.Printf("sendCommand: %s", time.Since(start).String())
-		}
-	}(now)
 	n, err := d.hw.CommandWriter().Write(append([]byte{byte(cmd)}, data...))
 	if err != nil {
 		log.Printf("sendCommand Write() = %d, %v", n, err)
 	}
 }
 
-func (d *Display) sendData(data []byte) {
-	if n, err := d.hw.DataWriter().Write(data); err != nil {
-		log.Printf("sendData failed: %d, %v", n, err)
-	}
-}
-
-func (d *Display) waitUntilIdle() {
-	now := time.Now()
-	defer func(start time.Time) {
-		log.Printf("waitUntilIdle: %s", time.Since(start).String())
-	}(now)
+// waitUntilIdle waits for the busy pin to be low voltage. It's required after some commands, and should not be
+// called unless necessary.
+func (d *Display)  waitUntilIdle() {
 	for d.hw.busy.Read() == gpio.Low {
 		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(10 * time.Millisecond)
 }
 
+// As far as I can tell this actually triggers a draw.
 func (d *Display) turnOnDisplay() {
 	// Load LUT from MCU(0x32)
 	d.sendCommand(displayUpdateControl2, 0xC7)
@@ -231,10 +163,11 @@ func (d *Display) Init() {
 
 // Clear clears the screen.
 func (d *Display) Clear() {
-	d.Render(nil, nil)
+	d.buffer.Reset()
+	d.Refresh()
 }
 
-// Render updates the screen from the provided io.ByteReaders.
+// Upload updates the screen from the provided io.ByteReaders.
 //
 // The epd7in5bhd does not support partial refreshes. If the provided buffer is
 // smaller than the image, then the rest will be filled with white.
@@ -245,11 +178,7 @@ func (d *Display) Clear() {
 // 0b1 is a red pixel, and 0b0 is a not-red pixel (no change will occur).
 //
 // Black will always be drawn on the screen before red.
-func (d *Display) Render(blackImg, redImg []byte) {
-	now := time.Now()
-	defer func(start time.Time) {
-		log.Printf("Render: %s", time.Since(start).String())
-	}(now)
+func (d *Display) Upload(blackImg, redImg []byte) {
 	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
 
 	// 1 is white, 0 is black.
@@ -262,24 +191,27 @@ func (d *Display) Render(blackImg, redImg []byte) {
 	d.turnOnDisplay()
 }
 
-// RenderPaletted renders an image in 3 colors (black, white and red/yellow).
+// Refresh uploads the buffer to the display.
+func (d *Display) Refresh() {
+	d.Upload(d.buffer.Black, d.buffer.Highlight)
+}
+
+// DrawAndRefresh is a convenience method for Draw and Refresh.
+func (d *Display) DrawAndRefresh(img image.Image) {
+	d.Draw(img)
+	d.Refresh()
+}
+
+// DrawAndRefresh draws an image to the display buffer in 3 colors (black, white and red/yellow).
 //
 // If img is a *image.Paletted with exactly 3 colors, each color will be assigned to its
 // nearest by euclidean distance. Otherwise, colors will be assigned by a per-pixel calculation.
-func (d *Display) RenderPaletted(img image.Image) {
-	now := time.Now()
-	defer func(start time.Time) {
-		log.Printf("RenderPaletted: %s", time.Since(start).String())
-	}(now)
-
-	d.sendCommand(setRamYAddressCtr, 0xAF, 0x02)
-	d.sendCommand(writeRAMBW)
-	//bbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
-	rbuf := bytes.NewBuffer(make([]byte, 0, BufSize))
-	Encode(d.hw.DataWriter(), rbuf, img)
-
-	d.sendCommand(writeRAMRed, rbuf.Bytes()...)
-	d.turnOnDisplay()
+func (d *Display) Draw(img image.Image) {
+	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
+		d.buffer.drawExactColors(pi)
+		return
+	}
+	draw.Draw(d.buffer, d.buffer.Bounds(), img, image.Point{0, 0}, draw.Src)
 }
 
 // Sleep tells the Display to enter deepSleepMode.
@@ -289,78 +221,26 @@ func (d *Display) Sleep() {
 	d.sendCommand(deepSleepMode, 0x01) //deep sleep
 }
 
-// Convert converts the input image into a byte buffer suitable for Display.Render.
+// Convert converts the input image into a byte buffer suitable for Display.Upload.
 func convert(img image.Image, p color.Palette) *Image {
 	now := time.Now()
 	defer func(start time.Time) {
 		log.Printf("Convert: %s", time.Since(start).String())
 	}(now)
-	bounds := img.Bounds()
-	dst := NewImage(bounds)
+	dst := NewImage(DisplayBounds)
 	dst.Palette = p
-	draw.Draw(dst, bounds, img, image.Point{0, 0}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), img, image.Point{0, 0}, draw.Src)
 	return dst
 }
 
-func Encode(dstBlack, dstRed io.Writer, img image.Image) {
-	if pi, ok := img.(*image.Paletted); ok && len(pi.Palette) == 3 {
-		encodeExactColors(dstBlack, dstRed, pi)
-		return
-	}
-	bounds := img.Bounds()
-	dst := NewImage(bounds)
-	draw.Draw(dst, bounds, img, image.Point{0, 0}, draw.Src)
-	dstBlack.Write(dst.Black)
-	dstRed.Write(dst.Highlight)
-}
-
-func encodeExactColors(dstBlack, dstRed io.Writer, img *image.Paletted) {
-	white, black, highlight := exactColorIndex(img)
-	bounds := img.Bounds()
-	dst := NewImage(bounds)
-	for y := 0; y < bounds.Dy(); y++ {
-		for x := 0; x < bounds.Dx(); x++ {
-			i := int(img.ColorIndexAt(x, y))
-			switch i {
-			case white:
-				dst.SetColorIndex(x, y, 0)
-			case black:
-				dst.SetColorIndex(x, y, 1)
-			case highlight:
-				dst.SetColorIndex(x, y, 2)
-			}
-		}
-	}
-	dstBlack.Write(dst.Black)
-	dstRed.Write(dst.Highlight)
-}
-
-func exactColorIndex(img *image.Paletted) (white, black, highlight int) {
-	// This order is significant. We want to try to assign white and black before our third color,
-	// as they may be closer to a totally non-red color (blue).
-	colors := []color.Color{color.White, color.Black, color.RGBA{255, 0, 0, 255}}
-	p := color.Palette{}
-	ip := make(color.Palette, len(img.Palette))
-	copy(ip, img.Palette)
-	// Sort Palette p:
-	// img.Palette lightest, img.Palette darkest, img.Palette remaining
-	// Iterate over colors, popping as we go to avoid duplicates.
-	// We don't want both faint red and white to be white.
-	for _, c := range colors {
-		ci := ip.Index(c)
-		p = append(p, ip[ci])
-		ip = append(ip[:ci], ip[ci+1:]...)
-	}
-	// Now, map our expected order to img.Paletted.Palette's order
-	return img.Palette.Index(p[0]), img.Palette.Index(p[1]), img.Palette.Index(p[2])
-}
-
-// RenderImages renders a black image and a red/yellow image on the display.
-func (d *Display) RenderImages(black, redyellow image.Image) {
+// DrawAndRefreshImages renders a black image and a red/yellow image on the display.
+func (d *Display) DrawAndRefreshImages(black, redyellow image.Image) {
 	now := time.Now()
 	defer func(start time.Time) {
-		log.Printf("RenderImages: %s", time.Since(start).String())
+		log.Printf("DrawAndRefreshImages: %s", time.Since(start).String())
 	}(now)
 	bi, hi := convert(black, color.Palette{White, Black}), convert(redyellow, color.Palette{White, Highlight})
-	d.Render(bi.Black, hi.Highlight)
+	d.buffer.Black = bi.Black
+	d.buffer.Highlight = hi.Highlight
+	d.Refresh()
 }
